@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "hyperparams": {
+    "alpha": 1.0,
+    "beta": 0.3,
+    "min_weight": 0.02
+  },
+  "entries": {
+    "baseline_v0": {
+      "type": "code",
+      "summary": "GPT with flash attention 3, RoPE, RMSNorm, value residuals (ResFormer), sliding window attention (SSSL pattern), squared ReLU MLP, softcap 15 logits, Muon+AdamW hybrid optimizer. 8 layers, aspect ratio 64, head dim 128.",
+      "content_path": "snapshots/baseline_v0.py",
+      "val_bpb": null,
+      "parents": null,
+      "weight": 0.125,
+      "generation": 0
+    },
+    "mamba": {
+      "type": "paper",
+      "summary": "Mamba replaces the quadratic-time attention layer with a *selective* structured state-space model (S4) whose \u0394, B, C parameters are input-dependent functions instead of fixed tensors.  \nThis single change lets the model gate tokens along the sequence dimension (content-aware forgetting/remembering) while still admitting a linear-time, hardware-friendly GPU scan: parameters stay in fast SRAM, a parallel-scan kernel fuses the recurrence, and intermediate states are recomputed during backprop, so memory stays O(BLD) like FlashAttention.  \nThe resulting architecture is a homogeneous stack of these selective-SSM blocks\u2014no attention heads, no MLPs\u2014yielding Transformer-quality perplexity on language, audio, and genomics with 5\u00d7 faster autoregressive generation and linear scaling to million-token contexts.",
+      "content_path": "papers/mamba.md",
+      "source_pdf": "papers/mamba.pdf",
+      "weight": 0.125,
+      "val_bpb": null,
+      "parents": null,
+      "generation": 0
+    },
+    "rwkv": {
+      "type": "paper",
+      "summary": "RWKV replaces quadratic self-attention with a *linear* attention mechanism that reformulates the QK^T matrix as a *channel-wise* vector decaying exponentially with relative position.  \nThis decay vector (W) is trained once per channel and applied via a custom CUDA kernel, turning the attention update into an RNN-style recurrence wkv_t = \u03a3_{i\u2264t} e^{-w(t-i)} k_i v_i that can be parallel-scanned during training yet needs only O(d) state at inference.  \n\nThe architecture keeps the Transformer\u2019s training parallelizability (time-parallel mode) while giving RNN-level memory (O(d)) and time (O(Td)) at inference; a \u201ctoken-shift\u201d operator blends current and previous hidden states to inject local context without convolution.  \n\nUnlike standard Transformers, RWKV is *formulated as both* a Transformer (for fast batched training) and an RNN (for constant-state autoregressive generation), eliminating the quadratic bottleneck without low-rank or sparsity approximations and scaling to 14 B parameters with matched performance.",
+      "content_path": "papers/rwkv.md",
+      "source_pdf": "papers/rwkv.pdf",
+      "weight": 0.125,
+      "val_bpb": null,
+      "parents": null,
+      "generation": 0
+    },
+    "retnet": {
+      "type": "paper",
+      "summary": "RetNet replaces softmax attention with a **retention mechanism** that has **dual parallel and recurrent forms**.  \nDuring training the parallel form keeps GPU-friendly matrix multiplications; at inference the recurrent form updates a fixed-size hidden state in **O(1) time and memory**, eliminating the KV-cache and making latency independent of sequence length.  \nA **chunkwise recurrent** variant splits long inputs into local blocks processed in parallel while summarising cross-chunk information recurrently, yielding **linear overall complexity** and constant activation memory.  \nEach head uses its own **exponential decay factor \u03b3** applied to a relative-position matrix **D**; this multi-scale decay plus a **Swish gate** and **GroupNorm** gives the model both position-aware and content-aware credit assignment without the quadratic attention matrix.  \nThe result is one architecture that simultaneously offers **training parallelism, Transformer-level perplexity, and O(1) inference cost**, breaking the \u201cimpossible triangle\u201d that limited prior linear/RNN/SSM alternatives.",
+      "content_path": "papers/retnet.md",
+      "source_pdf": "papers/retnet.pdf",
+      "weight": 0.125,
+      "val_bpb": null,
+      "parents": null,
+      "generation": 0
+    },
+    "hyena": {
+      "type": "paper",
+      "summary": "Hyena replaces the quadratic-cost attention matrix with a data-controlled, subquadratic operator built from two primitives repeated in depth: implicit long convolutions (filters generated on-the-fly by a small FFN) and element-wise gating.  \nThis yields an O(L log L) recurrence that factorizes a dense, input-dependent linear map without ever materializing an L\u00d7L matrix, giving unrestricted context like attention while keeping parameters decoupled from sequence length.  \nUnlike prior low-rank/sparse approximations, Hyena needs no hybrid attention layers to match Transformer quality, scaling to 64k-token sequences with 100\u00d7 speed-ups over FlashAttention and setting the first dense-attention-free SOTA on WikiText103/The Pile.",
+      "content_path": "papers/hyena.md",
+      "source_pdf": "papers/hyena.pdf",
+      "weight": 0.125,
+      "val_bpb": null,
+      "parents": null,
+      "generation": 0
+    },
+    "griffin": {
+      "type": "paper",
+      "summary": "Griffin replaces the quadratic-cost global attention in Transformers with a hybrid temporal-mixer that alternates a novel Real-Gated Linear Recurrent Unit (RG-LRU) with local sliding-window attention.  \nRG-LRU keeps a fixed-size hidden state updated by element-wise *gated* diagonal recurrences (input gate *i\u209c* and recurrence gate *r\u209c* modulate a learnable decay *a*), eliminating the KV cache growth that plagues Transformers while still allowing gradient-parallel training.  \nBy mixing these cheap recurrences with a 1024-token local attention every few layers, Griffin retains the ability to model both distant dependencies (via recurrence) and fine-grained local context (via attention) without ever materialising attention over the full sequence.  \nThe resulting 14 B-parameter model matches Llama-2 quality after 6\u00d7 fewer training tokens, trains at Transformer speed on TPUs via a custom Pallas kernel that fuses the memory-bound recurrence, and at inference delivers 2\u20133\u00d7 higher throughput and lower latency on long sequences because its cache stays constant-size while the Transformer\u2019s KV cache grows linearly.",
+      "content_path": "papers/griffin.md",
+      "source_pdf": "papers/griffin.pdf",
+      "weight": 0.125,
+      "val_bpb": null,
+      "parents": null,
+      "generation": 0
+    },
+    "xlstm": {
+      "type": "paper",
+      "summary": "xLSTM replaces the original LSTM\u2019s sigmoid gates with exponential gating plus a normalizer state, enabling the network to revise stored values and stabilizing very large gate magnitudes.  \nIt introduces two new cells: sLSTM keeps a scalar memory but adds \u201cmemory-mixing\u201d across multiple cells/heads inside each head, while mLSTM replaces the scalar cell with a d\u00d7d matrix updated by an outer-product (covariance) rule, giving linear-time parallel computation and far larger storage.  \nBoth cells are dropped into modern residual blocks (pre- or post-upprojection) and stacked like Transformers, yielding an architecture that is constant-memory in sequence length yet matches or beats strong Transformer/SSM baselines in language-modeling perplexity and long-context extrapolation.",
+      "content_path": "papers/xlstm.md",
+      "source_pdf": "papers/xlstm.pdf",
+      "weight": 0.125,
+      "val_bpb": null,
+      "parents": null,
+      "generation": 0
+    },
+    "gla": {
+      "type": "paper",
+      "summary": "The paper introduces FLASHLINEARATTENTION, an I/O-aware chunkwise algorithm that fuses operations and keeps tiles in SRAM, making linear attention faster than FlashAttention-2 even at 1K sequences.  \nIt augments the linear RNN with a data-dependent vector-valued gate \u03b1t that modulates the 2-D hidden state via Hadamard product Gt = \u03b1t 1T, giving the model a fine-grained forgetting mechanism while still admitting a stable chunkwise parallel form.  \nA two-level tiling scheme is proposed: inter-sub-chunk interactions use fast half-precision matmuls on tensor cores, while intra-sub-chunk attention-style weights are computed in full-precision log space, balancing speed and numerical stability.  \nThe resulting Gated Linear Attention (GLA) layer keeps parameter count comparable to softmax attention (\u2248 4d\u00b2), supports linear-time generation with enlarged matrix states, and scales to 24K-context training via truncated BPTT, outperforming RetNet/Mamba on recall tasks and length extrapolation while maintaining higher training throughput.",
+      "content_path": "papers/gla.md",
+      "source_pdf": "papers/gla.pdf",
+      "weight": 0.125,
+      "val_bpb": null,
+      "parents": null,
+      "generation": 0
+    }
+  },
+  "history": []
+}

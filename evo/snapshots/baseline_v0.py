@@ -4,12 +4,6 @@ Cherry-picked and simplified from nanochat.
 Usage: uv run train.py
 """
 
-# === ARCHITECTURE MANIFEST ===
-# GPT with flash attention 3, RoPE, RMSNorm, value residuals (ResFormer),
-# sliding window attention (SSSL pattern), squared ReLU MLP, softcap 15
-# logits, Muon+AdamW hybrid optimizer. 8 layers, aspect ratio 64, head dim 128.
-# === END MANIFEST ===
-
 import os
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"

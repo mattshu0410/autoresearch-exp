@@ -91,24 +91,124 @@ d4e5f6g	0.000000	0.0	crash	double model width (OOM)
 
 The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
 
-LOOP FOREVER:
+### Evolutionary protocol (gene pool)
 
-1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
-3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
-8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
-9. If val_bpb is equal or worse, you git reset back to where you started
+The experiment loop is driven by a **gene pool** (`evo/gene_pool.json`) containing architecture papers and winning code snapshots. Each entry has a fitness weight that evolves based on experimental results. The crossover engine is in `evo/crossover.py`.
 
-The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
+**SETUP (once, before the loop starts):**
+
+1. Read `evo/gene_pool.json` to see what's in the pool.
+2. Run the baseline `train.py` as-is. Record val_bpb.
+3. Update the baseline entry's `val_bpb` in `evo/gene_pool.json`.
+
+**LOOP FOREVER:**
+
+1. **Sample parents**: Run `python -c "from evo.crossover import load_pool, sample_parents, get_parent_info; pool = load_pool(); a, b = sample_parents(pool); print(f'Parent A: {a}'); print(f'Parent B: {b}'); ia = get_parent_info(pool, a); ib = get_parent_info(pool, b); print(f'A type={ia[\"type\"]}, summary={ia[\"summary\"][:100]}'); print(f'B type={ib[\"type\"]}, summary={ib[\"summary\"][:100]}'); print(f'A content: {ia[\"content_path\"]}'); print(f'B content: {ib[\"content_path\"]}')"` to pick two parents weighted by fitness. Note the parent IDs and content paths.
+
+2. **Crossover via subagent**: Spawn a subagent (Task tool) to do the actual blending. The subagent should:
+   - Read both parent content files (the full paper markdown or code snapshot)
+   - Read the current `train.py`
+   - Write a new `train.py` that coherently blends ideas from both parents
+   - Update the MANIFEST comment block at the top of `train.py`
+
+   **IMPORTANT**: Use a subagent for this step to avoid loading large paper files into your main context. The subagent prompt should include:
+   - The content paths for both parents
+   - What type each parent is (paper or code) and their summaries
+   - The path to the current `train.py`
+   - Instructions to blend ideas and write a valid, runnable `train.py`
+   - All constraints from this file (single file, imports from prepare.py, etc.)
+
+3. **git commit** the new `train.py`.
+
+4. **Run the experiment**: `uv run train.py > run.log 2>&1`
+
+5. **Read results**: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
+   - If grep is empty, the run crashed. Run `tail -n 50 run.log` for the stack trace. If fixable, fix and re-run. Otherwise, skip.
+
+6. **Update gene pool weights**: Run:
+   ```
+   python -c "
+   from evo.crossover import load_pool, save_pool, update_weights
+   pool = load_pool()
+   pool = update_weights(pool, ('PARENT_A_ID', 'PARENT_B_ID'), won=BOOL, delta_bpb=DELTA, best_bpb=BEST)
+   save_pool(pool)
+   "
+   ```
+   Where `delta_bpb = best_bpb - new_bpb` (positive = improvement), and `won` is True if val_bpb improved.
+
+7. **If val_bpb improved** (lower):
+   - Keep the git commit (advance the branch).
+   - Register the winner:
+     ```
+     python -c "
+     from evo.crossover import load_pool, save_pool, register_winner
+     pool = load_pool()
+     train_py = open('train.py').read()
+     pool = register_winner(pool, ('PARENT_A_ID', 'PARENT_B_ID'), train_py, NEW_BPB, BEST_BPB, 'description of what changed')
+     save_pool(pool)
+     "
+     ```
+   - Update your best_bpb tracker.
+
+8. **If val_bpb is equal or worse**:
+   - `git reset` back to the previous commit.
+   - Log the loss:
+     ```
+     python -c "
+     from evo.crossover import load_pool, save_pool, log_loss
+     pool = load_pool()
+     pool = log_loss(pool, ('PARENT_A_ID', 'PARENT_B_ID'), NEW_BPB_OR_NONE)
+     save_pool(pool)
+     "
+     ```
+
+9. **Log to results.tsv** (same format as before, add parent info to description).
+
+10. **Repeat from step 1.**
+
+### Subagent prompt template
+
+When spawning the crossover subagent, use a prompt like this (adapt based on parent types):
+
+> Read these files:
+> - Parent A ({type}): {content_path} — {summary}
+> - Parent B ({type}): {content_path} — {summary}
+> - Current code: train.py
+>
+> Write a new train.py that blends architectural ideas from both parents.
+> Keep the code functional and runnable. It must:
+> - Import from prepare.py: MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
+> - Print val_bpb at the end
+> - Respect the TIME_BUDGET for training duration
+> - Not add new package dependencies
+> - Stay in a single file
+> - Update the MANIFEST comment block at the top
+>
+> Choose the most promising ideas from each parent. The result should be
+> a coherent architecture, not a random mashup.
+
+### Gene pool expansion
+
+When the pool goes stale, search the web for a new architecture paper to inject. Staleness triggers:
+
+- 5 consecutive losses, OR
+- One entry holds >50% of total weight, OR
+- All unique parent pairs in the pool have been tried (check history)
+
+Prefer papers that introduce a novel mechanism and have high citation counts or top-venue publication. Ingest via:
+```
+python evo/extract_paper.py --arxiv <ID> --name "<short_name>"
+```
+Add at most one paper per staleness trigger.
+
+### Fallback
+
+If the gene pool has fewer than 2 entries, or if you want to try a purely intuition-driven experiment, you can skip the evolutionary protocol and edit `train.py` directly (the original approach). This is fine — not every experiment needs to come from crossover.
 
 **Timeout**: Each experiment should take ~5 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 10 minutes, kill it and treat it as a failure (discard and revert).
 
 **Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
 
-**NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
+**NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of ideas, think harder — sample new parent combinations from the gene pool, try crossing parents that haven't been combined before, or fall back to direct edits. The loop runs until the human interrupts you, period.
 
 As an example use case, a user might leave you running while they sleep. If each experiment takes you ~5 minutes then you can run approx 12/hour, for a total of about 100 over the duration of the average human sleep. The user then wakes up to experimental results, all completed by you while they slept!
