@@ -5,6 +5,13 @@
     "beta": 0.3,
     "min_weight": 0.02
   },
+  "schedule": {
+    "type": "cosine",
+    "xover_start": 0.80,
+    "xover_end": 0.05,
+    "n_total": 200,
+    "staleness_trigger": 5
+  },
   "entries": {
     "baseline_v0": {
       "type": "code",

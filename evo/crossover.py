@@ -1,11 +1,12 @@
 """
 Crossover engine for evolutionary autoresearch.
 
-This module handles gene pool data management only. The creative work of
-blending parents into a new train.py is done by the agent (or a subagent
-it spawns to avoid context bloat from large paper markdown files).
+This module handles gene pool data management and scheduling. The creative
+work of blending parents into a new train.py is done by the agent (or a
+subagent it spawns to avoid context bloat from large paper markdown files).
 
 Functions for the agent to call:
+- should_crossover: query the scheduler — "crossover" or "tune" this iteration?
 - load_pool / save_pool: read/write gene_pool.json
 - sample_parents: weighted selection of two parents
 - get_parent_info: get metadata + content paths for sampled parents
@@ -16,6 +17,7 @@ Functions for the agent to call:
 """
 
 import json
+import math
 import random
 import time
 from pathlib import Path
@@ -51,6 +53,103 @@ def _apply_floor(pool: dict):
     for entry in pool["entries"].values():
         entry["weight"] = max(entry["weight"], min_w)
     _renormalize(pool)
+
+
+# ── Scheduler ────────────────────────────────────────────────────────
+
+# Default schedule config — merged into gene_pool.json on first use.
+DEFAULT_SCHEDULE = {
+    "type": "cosine",       # "constant", "linear", "exp", "cosine", "step"
+    "xover_start": 0.80,    # crossover probability at experiment 0
+    "xover_end": 0.05,      # crossover probability at experiment n_total
+    "n_total": 200,         # expected total experiments (for schedule progress)
+    "staleness_trigger": 5, # force crossover after N consecutive losses (0=off)
+}
+
+
+def _schedule_prob(step: int, cfg: dict) -> float:
+    """Compute base crossover probability at a given step."""
+    t = step / max(cfg["n_total"] - 1, 1)  # 0..1
+    t = min(t, 1.0)
+    s, e = cfg["xover_start"], cfg["xover_end"]
+    stype = cfg["type"]
+
+    if stype == "constant":
+        return s
+    elif stype == "linear":
+        return s + (e - s) * t
+    elif stype == "exp":
+        if s <= 0 or e <= 0:
+            return s + (e - s) * t
+        return s * (e / s) ** t
+    elif stype == "cosine":
+        return e + (s - e) * 0.5 * (1 + math.cos(math.pi * t))
+    elif stype == "step":
+        return s if t < 0.5 else e
+    return s
+
+
+def _consecutive_losses(pool: dict) -> int:
+    """Count consecutive losses from the end of history."""
+    count = 0
+    for h in reversed(pool.get("history", [])):
+        if h["won"]:
+            break
+        count += 1
+    return count
+
+
+def should_crossover(pool: dict) -> dict:
+    """
+    Query the scheduler: should this iteration be a crossover or a tune?
+
+    Reads schedule config from pool["schedule"] (falls back to defaults).
+    Uses pool["history"] length as the experiment counter.
+
+    Returns:
+        {
+            "action": "crossover" | "tune",
+            "reason": str,          # human-readable explanation
+            "experiment": int,      # current experiment number
+            "base_prob": float,     # schedule probability (before overrides)
+            "consecutive_losses": int,
+        }
+    """
+    cfg = {**DEFAULT_SCHEDULE, **pool.get("schedule", {})}
+    step = len(pool.get("history", []))
+    base_prob = _schedule_prob(step, cfg)
+    consec = _consecutive_losses(pool)
+
+    # Staleness override: force crossover if stuck
+    if cfg["staleness_trigger"] > 0 and consec >= cfg["staleness_trigger"]:
+        return {
+            "action": "crossover",
+            "reason": f"staleness: {consec} consecutive losses (trigger={cfg['staleness_trigger']})",
+            "experiment": step,
+            "base_prob": base_prob,
+            "consecutive_losses": consec,
+        }
+
+    # Roll against schedule probability
+    roll = random.random()
+    if roll < base_prob:
+        return {
+            "action": "crossover",
+            "reason": f"schedule: rolled {roll:.3f} < {base_prob:.3f} "
+                      f"({cfg['type']} at step {step}/{cfg['n_total']})",
+            "experiment": step,
+            "base_prob": base_prob,
+            "consecutive_losses": consec,
+        }
+    else:
+        return {
+            "action": "tune",
+            "reason": f"schedule: rolled {roll:.3f} >= {base_prob:.3f} "
+                      f"({cfg['type']} at step {step}/{cfg['n_total']})",
+            "experiment": step,
+            "base_prob": base_prob,
+            "consecutive_losses": consec,
+        }
 
 
 def sample_parents(pool: dict) -> tuple[str, str]:
@@ -205,6 +304,17 @@ def show_pool(pool: dict):
     print(f"Hyperparams: alpha={pool['hyperparams']['alpha']}, "
           f"beta={pool['hyperparams']['beta']}, "
           f"min_weight={pool['hyperparams']['min_weight']}")
+
+    cfg = {**DEFAULT_SCHEDULE, **pool.get("schedule", {})}
+    step = len(pool.get("history", []))
+    prob = _schedule_prob(step, cfg)
+    consec = _consecutive_losses(pool)
+    print(f"Schedule: {cfg['type']} {cfg['xover_start']}→{cfg['xover_end']} "
+          f"over {cfg['n_total']} exps, staleness@{cfg['staleness_trigger']}")
+    print(f"  Step {step}/{cfg['n_total']}, "
+          f"current xover_prob={prob:.3f}, "
+          f"consecutive_losses={consec}")
+
     print("-" * 70)
     sorted_entries = sorted(pool["entries"].items(), key=lambda x: -x[1]["weight"])
     for eid, entry in sorted_entries:

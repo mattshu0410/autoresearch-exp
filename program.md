@@ -103,9 +103,23 @@ The experiment loop is driven by a **gene pool** (`evo/gene_pool.json`) containi
 
 **LOOP FOREVER:**
 
-1. **Sample parents**: Run `python -c "from evo.crossover import load_pool, sample_parents, get_parent_info; pool = load_pool(); a, b = sample_parents(pool); print(f'Parent A: {a}'); print(f'Parent B: {b}'); ia = get_parent_info(pool, a); ib = get_parent_info(pool, b); print(f'A type={ia[\"type\"]}, summary={ia[\"summary\"][:100]}'); print(f'B type={ib[\"type\"]}, summary={ib[\"summary\"][:100]}'); print(f'A content: {ia[\"content_path\"]}'); print(f'B content: {ib[\"content_path\"]}')"` to pick two parents weighted by fitness. Note the parent IDs and content paths.
+1. **Ask the scheduler** what to do this iteration:
+   ```
+   python -c "
+   from evo.crossover import load_pool, should_crossover
+   pool = load_pool()
+   d = should_crossover(pool)
+   print(f'Action: {d[\"action\"]}')
+   print(f'Reason: {d[\"reason\"]}')
+   print(f'Experiment: {d[\"experiment\"]}, xover_prob: {d[\"base_prob\"]:.3f}, consec_losses: {d[\"consecutive_losses\"]}')
+   "
+   ```
+   The schedule is configured in `evo/gene_pool.json` under `"schedule"` (type, xover_start, xover_end, n_total, staleness_trigger). It anneals crossover probability over time — high early (explore architectures), low late (tune hyperparameters).
 
-2. **Crossover via subagent**: Spawn a subagent (Task tool) to do the actual blending. The subagent should:
+   - **If `action == "tune"`**: Edit `train.py` directly — tweak hyperparameters, optimizer settings, small architectural changes. Use your own judgment based on recent results. Skip to step 3 (git commit).
+   - **If `action == "crossover"`**: Continue to step 2.
+
+2. **Sample parents and crossover**: Run `python -c "from evo.crossover import load_pool, sample_parents, get_parent_info; pool = load_pool(); a, b = sample_parents(pool); print(f'Parent A: {a}'); print(f'Parent B: {b}'); ia = get_parent_info(pool, a); ib = get_parent_info(pool, b); print(f'A type={ia[\"type\"]}, summary={ia[\"summary\"][:100]}'); print(f'B type={ib[\"type\"]}, summary={ib[\"summary\"][:100]}'); print(f'A content: {ia[\"content_path\"]}'); print(f'B content: {ib[\"content_path\"]}')"` to pick two parents weighted by fitness. Then spawn a subagent (Task tool) to do the blending. The subagent should:
    - Read both parent content files (the full paper markdown or code snapshot)
    - Read the current `train.py`
    - Write a new `train.py` that coherently blends ideas from both parents
