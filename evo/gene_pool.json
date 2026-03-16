@@ -7,7 +7,7 @@
   },
   "schedule": {
     "type": "cosine",
-    "xover_start": 0.80,
+    "xover_start": 0.8,
     "xover_end": 0.05,
     "n_total": 200,
     "staleness_trigger": 5

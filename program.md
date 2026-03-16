@@ -103,82 +103,41 @@ The experiment loop is driven by a **gene pool** (`evo/gene_pool.json`) containi
 
 **LOOP FOREVER:**
 
-1. **Ask the scheduler** what to do this iteration:
+1. **Check `evo/next.py` output** from the previous iteration. It tells you what to do. On the very first iteration after baseline, run `python evo/next.py --baseline --val_bpb <BASELINE_BPB>` to seed the scheduler.
+
+   The output will say either **`ACTION: CROSSOVER`** or **`ACTION: TUNE`**. You MUST follow this instruction.
+
+   - **If CROSSOVER**: The output includes pre-sampled parents with their IDs, types, summaries, and content paths. Spawn a subagent (Task tool) to blend them:
+     - The subagent reads both parent content files and the current `train.py`
+     - Writes a new `train.py` blending architectural ideas from both parents
+     - Updates the MANIFEST comment block
+     - Use a subagent to avoid loading large paper files into main context
+   - **If TUNE**: Edit `train.py` directly — tweak hyperparameters, optimizer settings, or small architectural changes. Use your own judgment.
+
+2. **git commit** the new `train.py`.
+
+3. **Run the experiment**: `uv run train.py > run.log 2>&1`
+
+4. **Read results**: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
+   - If grep is empty, the run crashed. Run `tail -n 50 run.log` for the stack trace. If fixable, fix and re-run.
+
+5. **Run `evo/next.py`** to log the result AND get the next action:
    ```
-   python -c "
-   from evo.crossover import load_pool, should_crossover
-   pool = load_pool()
-   d = should_crossover(pool)
-   print(f'Action: {d[\"action\"]}')
-   print(f'Reason: {d[\"reason\"]}')
-   print(f'Experiment: {d[\"experiment\"]}, xover_prob: {d[\"base_prob\"]:.3f}, consec_losses: {d[\"consecutive_losses\"]}')
-   "
+   # After a successful run (won or lost — script handles both):
+   python evo/next.py --parents "PARENT_A,PARENT_B" --val_bpb <NEW_BPB> --best_bpb <BEST_BPB> --desc "what you tried"
+
+   # After a crash:
+   python evo/next.py --parents "PARENT_A,PARENT_B" --crash --desc "why it crashed"
+
+   # For tune iterations (no parents):
+   python evo/next.py --parents "tune,tune" --val_bpb <NEW_BPB> --best_bpb <BEST_BPB> --desc "what you tuned"
    ```
-   The schedule is configured in `evo/gene_pool.json` under `"schedule"` (type, xover_start, xover_end, n_total, staleness_trigger). It anneals crossover probability over time — high early (explore architectures), low late (tune hyperparameters).
+   This script does everything: updates weights, registers winners, logs losses, AND prints the next action with pre-sampled parents. **Read its output carefully — it tells you exactly what to do next.**
 
-   - **If `action == "tune"`**: Edit `train.py` directly — tweak hyperparameters, optimizer settings, small architectural changes. Use your own judgment based on recent results. Skip to step 3 (git commit).
-   - **If `action == "crossover"`**: Continue to step 2.
-
-2. **Sample parents and crossover**: Run `python -c "from evo.crossover import load_pool, sample_parents, get_parent_info; pool = load_pool(); a, b = sample_parents(pool); print(f'Parent A: {a}'); print(f'Parent B: {b}'); ia = get_parent_info(pool, a); ib = get_parent_info(pool, b); print(f'A type={ia[\"type\"]}, summary={ia[\"summary\"][:100]}'); print(f'B type={ib[\"type\"]}, summary={ib[\"summary\"][:100]}'); print(f'A content: {ia[\"content_path\"]}'); print(f'B content: {ib[\"content_path\"]}')"` to pick two parents weighted by fitness. Then spawn a subagent (Task tool) to do the blending. The subagent should:
-   - Read both parent content files (the full paper markdown or code snapshot)
-   - Read the current `train.py`
-   - Write a new `train.py` that coherently blends ideas from both parents
-   - Update the MANIFEST comment block at the top of `train.py`
-
-   **IMPORTANT**: Use a subagent for this step to avoid loading large paper files into your main context. The subagent prompt should include:
-   - The content paths for both parents
-   - What type each parent is (paper or code) and their summaries
-   - The path to the current `train.py`
-   - Instructions to blend ideas and write a valid, runnable `train.py`
-   - All constraints from this file (single file, imports from prepare.py, etc.)
-
-3. **git commit** the new `train.py`.
-
-4. **Run the experiment**: `uv run train.py > run.log 2>&1`
-
-5. **Read results**: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-   - If grep is empty, the run crashed. Run `tail -n 50 run.log` for the stack trace. If fixable, fix and re-run. Otherwise, skip.
-
-6. **Update gene pool weights**: Run:
-   ```
-   python -c "
-   from evo.crossover import load_pool, save_pool, update_weights
-   pool = load_pool()
-   pool = update_weights(pool, ('PARENT_A_ID', 'PARENT_B_ID'), won=BOOL, delta_bpb=DELTA, best_bpb=BEST)
-   save_pool(pool)
-   "
-   ```
-   Where `delta_bpb = best_bpb - new_bpb` (positive = improvement), and `won` is True if val_bpb improved.
-
-7. **If val_bpb improved** (lower):
-   - Keep the git commit (advance the branch).
-   - Register the winner:
-     ```
-     python -c "
-     from evo.crossover import load_pool, save_pool, register_winner
-     pool = load_pool()
-     train_py = open('train.py').read()
-     pool = register_winner(pool, ('PARENT_A_ID', 'PARENT_B_ID'), train_py, NEW_BPB, BEST_BPB, 'description of what changed')
-     save_pool(pool)
-     "
-     ```
-   - Update your best_bpb tracker.
-
-8. **If val_bpb is equal or worse**:
-   - `git reset` back to the previous commit.
-   - Log the loss:
-     ```
-     python -c "
-     from evo.crossover import load_pool, save_pool, log_loss
-     pool = load_pool()
-     pool = log_loss(pool, ('PARENT_A_ID', 'PARENT_B_ID'), NEW_BPB_OR_NONE)
-     save_pool(pool)
-     "
-     ```
-
-9. **Log to results.tsv** (same format as before, add parent info to description).
-
-10. **Repeat from step 1.**
+6. **If val_bpb improved**: Keep the commit. The script already registered the winner.
+7. **If val_bpb is worse or equal**: `git reset` back to the previous commit.
+8. **Log to results.tsv** (same format as before).
+9. **Follow the NEXT ITERATION instruction** from step 5's output. Go to step 1.
 
 ### Subagent prompt template
 
