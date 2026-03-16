@@ -105,14 +105,10 @@ The experiment loop is driven by a **gene pool** (`evo/gene_pool.json`) containi
 
 1. **Check `evo/next.py` output** from the previous iteration. It tells you what to do. On the very first iteration after baseline, run `python evo/next.py --baseline --val_bpb <BASELINE_BPB>` to seed the scheduler.
 
-   The output will say either **`ACTION: CROSSOVER`** or **`ACTION: TUNE`**. You MUST follow this instruction.
+   The output will say either **`ACTION: CROSSOVER`** or **`ACTION: TUNE`**. You MUST follow this instruction. Under no circumstances are you allowed to deviate from this even if it leads to worse results.
 
-   - **If CROSSOVER**: The output includes pre-sampled parents with their IDs, types, summaries, and content paths. Spawn a subagent (Task tool) to blend them:
-     - The subagent reads both parent content files and the current `train.py`
-     - Writes a new `train.py` blending architectural ideas from both parents
-     - Updates the MANIFEST comment block
-     - Use a subagent to avoid loading large paper files into main context
-   - **If TUNE**: Edit `train.py` directly — tweak hyperparameters, optimizer settings, or small architectural changes. Use your own judgment.
+   - **If CROSSOVER**: You must run `python evo/gen_crossover.py` with no exceptions and no subsequents edits to train.py before running. This calls the LLM API and writes the new `train.py` directly. Do not edit `train.py` yourself.
+   - **If TUNE**: Edit `train.py` directly — one targeted change (hyperparameter, optimizer setting, small architectural tweak).
 
 2. **git commit** the new `train.py`.
 
@@ -138,27 +134,6 @@ The experiment loop is driven by a **gene pool** (`evo/gene_pool.json`) containi
 7. **If val_bpb is worse or equal**: `git reset` back to the previous commit.
 8. **Log to results.tsv** (same format as before).
 9. **Follow the NEXT ITERATION instruction** from step 5's output. Go to step 1.
-
-### Subagent prompt template
-
-When spawning the crossover subagent, use a prompt like this (adapt based on parent types):
-
-> Read these files:
-> - Parent A ({type}): {content_path} — {summary}
-> - Parent B ({type}): {content_path} — {summary}
-> - Current code: train.py
->
-> Write a new train.py that blends architectural ideas from both parents.
-> Keep the code functional and runnable. It must:
-> - Import from prepare.py: MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
-> - Print val_bpb at the end
-> - Respect the TIME_BUDGET for training duration
-> - Not add new package dependencies
-> - Stay in a single file
-> - Update the MANIFEST comment block at the top
->
-> Choose the most promising ideas from each parent. The result should be
-> a coherent architecture, not a random mashup.
 
 ### Gene pool expansion
 
